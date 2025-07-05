@@ -42,4 +42,6 @@ rDNS
 
     CIDR 172.20.0.0/16 (65536 IPs)
 
+    Scan completed in 37.938820541s 
+
 |
