@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -155,6 +156,38 @@ func (s *IPScanner) ScanRange(cidr string) error {
 	return nil
 }
 
+func getDefaultDNS() (string, error) {
+	file, err := os.Open("/etc/resolv.conf")
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Strip comments
+		if i := strings.Index(line, "#"); i >= 0 {
+			line = line[:i]
+		}
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "nameserver") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				ip := fields[1]
+				if net.ParseIP(ip) != nil {
+					return ip, nil
+				}
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	return "", fmt.Errorf("no valid nameserver found in /etc/resolv.conf")
+}
+
 func main() {
 	// Command line flags
 	var (
@@ -164,28 +197,41 @@ func main() {
 		flag_dnsServer = flag.String("dns", "", "DNS server (IP:port or hostname:port)")
 		flag_verbose   = flag.Bool("verbose", false, "Show verbose output including failed lookups")
 		flag_recursion = flag.Bool("recursion", false, "Ask srv to perform recursion")
+		flag_noinput   = flag.Bool("noinput", false, "Ignore keyboard keys")
 	)
 
 	flag.Parse()
 
 	// DNS
-	if *flag_dnsServer == "" {
-		fmt.Printf("Missing DNS server\n")
-		os.Exit(1)
+	dnsServer := *flag_dnsServer
+	if dnsServer == "" {
+		var err error
+		dnsServer, err = getDefaultDNS()
+		if err != nil {
+			fmt.Printf("Missing DNS server\n")
+			os.Exit(1)
+		}
+	}
+
+	// Set port if missing
+	if !strings.Contains(dnsServer, ":") {
+		dnsServer = dnsServer + ":53"
 	}
 
 	// Create scanner
-	scanner := NewIPScanner(*flag_workers, *flag_timeout, *flag_dnsServer)
+	scanner := NewIPScanner(*flag_workers, *flag_timeout, dnsServer)
 
 	// Setup Enter key handling for graceful shutdown
-	go func() {
-		reader := bufio.NewReader(os.Stdin)
-		reader.ReadLine()
-		fmt.Println("Enter pressed, stopping scan...")
-		scanner.Stop()
-	}()
+	if !*flag_noinput {
+		go func() {
+			reader := bufio.NewReader(os.Stdin)
+			reader.ReadLine()
+			fmt.Println("Enter pressed, stopping scan...")
+			scanner.Stop()
+		}()
+	}
 
-	fmt.Printf("Workers: %d, Timeout: %v, DNS: %s", *flag_workers, *flag_timeout, *flag_dnsServer)
+	fmt.Printf("Workers: %d, Timeout: %v, DNS: %s", *flag_workers, *flag_timeout, dnsServer)
 
 	verbose = *flag_verbose
 	if verbose {
